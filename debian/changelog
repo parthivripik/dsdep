@@ -1,3 +1,14 @@
+dsdep (1.1.0-1) unstable; urgency=medium
+
+  * Added S3 model download support
+  * Added .env file setup (interactive, copy, template modes)
+  * Added AWS credentials management
+  * Added --skip-models and --skip-hardening options
+  * Improved workflow with 9 steps
+  * Better verification of models and environment
+
+ -- Parthiv Ripik <parthiv@ripiktech.com>  Thu, 11 Dec 2024 14:00:00 +0530
+
 dsdep (1.0.0-1) unstable; urgency=medium
 
   * Initial release.

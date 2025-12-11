@@ -3,13 +3,13 @@
 # dsdep - Data Science Deployment Tool
 # Deploy Python projects with systemd hardening on Linux
 # 
-# Repository: https://github.com/ripiktech/ripik_ds_helper
+# Repository: https://github.com/parthivripik/dsdep
 # License: MIT
 # =============================================================================
 
 set -e
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 SCRIPT_NAME="dsdep"
 LOG_PREFIX="[dsdep]"
 
@@ -27,6 +27,7 @@ DEFAULT_REQUIREMENTS_URL="https://raw.githubusercontent.com/ripiktech/ripik_ds_h
 HARDENING_SCRIPT_URL="https://raw.githubusercontent.com/ripiktech/ripik_ds_helper/main/DsHelper/linux_hardening.py"
 DEFAULT_INSTALL_DIR="/opt/dsdep-projects"
 TEMPLATES_DIR="/usr/share/dsdep/templates"
+DEFAULT_MODELS_DIR="models"
 
 # =============================================================================
 # Helper Functions
@@ -77,10 +78,17 @@ print_usage() {
 ${BOLD}USAGE:${NC}
     ${SCRIPT_NAME} [OPTIONS]
 
-${BOLD}OPTIONS:${NC}
-    -r, --repo <URL>          Git repository URL to clone (required)
+${BOLD}REQUIRED OPTIONS:${NC}
+    -r, --repo <URL>          Git repository URL to clone
+
+${BOLD}ENVIRONMENT OPTIONS:${NC}
     -e, --env <PATH>          Conda environment path to use
+    -c, --create-env <NAME>   Create new conda environment with this name
+    -v, --venv                Use Python venv instead of conda
+    -p, --conda-profile <PATH> Conda profile script path
     -R, --requirements <PATH> Path to requirements.txt file
+
+${BOLD}SERVICE OPTIONS:${NC}
     -n, --name <NAME>         Service name (default: derived from repo name)
     -m, --main <SCRIPT>       Main Python script to run (default: main.py)
     -a, --args <ARGS>         Arguments to pass to main script
@@ -88,53 +96,74 @@ ${BOLD}OPTIONS:${NC}
     -t, --timeout <SECONDS>   Monitoring timeout in seconds (default: 600)
     -u, --user <USER>         Linux user to run service (default: root)
     -d, --dest <PATH>         Destination directory (default: ${DEFAULT_INSTALL_DIR})
-    -p, --conda-profile <PATH> Conda profile script path
-    -c, --create-env <NAME>   Create new conda environment with this name
-    -v, --venv                Use Python venv instead of conda
+
+${BOLD}AWS/S3 MODEL DOWNLOAD OPTIONS:${NC}
+    --s3-bucket <BUCKET>      S3 bucket name containing models
+    --s3-prefix <PREFIX>      S3 prefix/path to models (e.g., "models/" or "project/weights/")
+    --s3-region <REGION>      AWS region (default: from .env or ap-south-1)
+    --models-dir <DIR>        Local directory for models (default: models/)
+    --model-ext <EXT>         Model file extensions to download (default: .pt,.pth,.onnx,.weights)
+
+${BOLD}ENVIRONMENT FILE OPTIONS:${NC}
+    --env-file <PATH>         Path to existing .env file to copy to project
+    --setup-env               Interactive mode to create .env file with AWS credentials
+    --env-template <PATH>     Path to .env template file (copies and prompts for values)
+
+${BOLD}OTHER OPTIONS:${NC}
+    --skip-models             Skip model download even if S3 options provided
+    --skip-hardening          Skip systemd hardening (just setup env and models)
     --dry-run                 Show what would be done without executing
     -h, --help                Show this help message
     --version                 Show version
 
 ${BOLD}EXAMPLES:${NC}
-    # Clone repo and deploy with existing conda env
+    # Basic deployment with existing conda env
     ${SCRIPT_NAME} -r https://github.com/user/project -e /root/miniconda3/envs/myenv
 
-    # Clone and create new conda environment
-    ${SCRIPT_NAME} -r https://github.com/user/project -c myproject-env
+    # Deploy with S3 model download (interactive AWS setup)
+    ${SCRIPT_NAME} -r https://github.com/user/project -c myenv \\
+        --s3-bucket my-models-bucket \\
+        --s3-prefix "production/models/" \\
+        --setup-env
 
-    # Clone with custom requirements file
-    ${SCRIPT_NAME} -r https://github.com/user/project -R ./custom-requirements.txt -c myenv
+    # Deploy with existing .env file
+    ${SCRIPT_NAME} -r https://github.com/user/project -c myenv \\
+        --s3-bucket my-models-bucket \\
+        --env-file /path/to/my/.env
 
-    # Use Python venv instead of conda
-    ${SCRIPT_NAME} -r https://github.com/user/project --venv
+    # Deploy with custom models directory
+    ${SCRIPT_NAME} -r https://github.com/user/project -c myenv \\
+        --s3-bucket my-bucket --s3-prefix "weights/" \\
+        --models-dir "weights" --setup-env
 
     # Full example with all options
     ${SCRIPT_NAME} -r https://github.com/user/project \\
         -e /root/miniconda3/envs/prod \\
-        -n my-service \\
-        -m app.py \\
-        -a "--config prod" \\
-        -l /var/log/myapp.log \\
-        -t 300
+        -n my-service -m app.py -a "--config prod" \\
+        --s3-bucket models-bucket --s3-prefix "v2/" \\
+        --env-file ~/.env.production
 
 ${BOLD}WORKFLOW:${NC}
     1. Clone the repository
-    2. Set up Python environment (conda/venv)
-    3. Install dependencies
-    4. Run Linux hardening script (creates runner.py, shell script, systemd service)
-    5. Verify service is running and logs are being generated
-    6. Report status and exit
+    2. Setup .env file (interactive or from file)
+    3. Set up Python environment (conda/venv)
+    4. Install dependencies
+    5. Download models from S3 (if configured)
+    6. Run Linux hardening script (creates systemd service)
+    7. Verify service is running
+    8. Report status and exit
 
 ${BOLD}NOTES:${NC}
     - Requires sudo privileges for systemd operations
-    - If no environment is specified, a new conda env will be created
-    - If no requirements.txt is provided, uses repo's requirements.txt or default
+    - AWS credentials are read from .env file in project directory
+    - Models are downloaded to <project>/<models-dir>/
+    - Supported model extensions: .pt, .pth, .onnx, .weights, .h5, .pkl
 
 EOF
 }
 
 check_dependencies() {
-    log_step "Step 1/7: Checking Dependencies"
+    log_step "Step 1/9: Checking Dependencies"
     
     local missing_deps=()
     
@@ -157,12 +186,14 @@ check_dependencies() {
         fi
     fi
     
-    # Check systemctl
-    if ! command -v systemctl &> /dev/null; then
-        log_error "systemctl not found. This tool requires systemd."
-        exit 1
+    # Check systemctl (only if hardening is enabled)
+    if [ "$SKIP_HARDENING" != "true" ]; then
+        if ! command -v systemctl &> /dev/null; then
+            log_error "systemctl not found. This tool requires systemd."
+            exit 1
+        fi
+        log_info "Found: systemctl ($(command -v systemctl))"
     fi
-    log_info "Found: systemctl ($(command -v systemctl))"
     
     if [ ${#missing_deps[@]} -ne 0 ]; then
         log_error "Missing dependencies: ${missing_deps[*]}"
@@ -209,7 +240,7 @@ find_conda_profile() {
 }
 
 clone_repository() {
-    log_step "Step 2/7: Cloning Repository"
+    log_step "Step 2/9: Cloning Repository"
     
     log_info "Repository: $REPO_URL"
     log_info "Destination: $DEST_DIR"
@@ -236,7 +267,7 @@ clone_repository() {
             log_info "Pulling latest changes..."
             cd "$PROJECT_PATH"
             git pull
-            cd -
+            cd - > /dev/null
         fi
     else
         log_info "Cloning repository..."
@@ -250,8 +281,178 @@ clone_repository() {
     log_success "Repository ready at: $PROJECT_PATH"
 }
 
+setup_env_file() {
+    log_step "Step 3/9: Setting Up Environment File (.env)"
+    
+    local env_file_path="$PROJECT_PATH/.env"
+    
+    if [ -n "$ENV_FILE_PATH" ]; then
+        # Copy from existing file
+        log_info "Copying .env from: $ENV_FILE_PATH"
+        
+        if [ ! -f "$ENV_FILE_PATH" ]; then
+            log_error "Environment file not found: $ENV_FILE_PATH"
+            exit 1
+        fi
+        
+        if [ "$DRY_RUN" = "true" ]; then
+            log_info "[DRY RUN] Would copy $ENV_FILE_PATH to $env_file_path"
+        else
+            cp "$ENV_FILE_PATH" "$env_file_path"
+            chmod 600 "$env_file_path"
+            log_success "Copied .env file to project"
+        fi
+        
+    elif [ -n "$ENV_TEMPLATE_PATH" ]; then
+        # Copy template and prompt for values
+        log_info "Using template: $ENV_TEMPLATE_PATH"
+        
+        if [ ! -f "$ENV_TEMPLATE_PATH" ]; then
+            log_error "Template file not found: $ENV_TEMPLATE_PATH"
+            exit 1
+        fi
+        
+        if [ "$DRY_RUN" = "true" ]; then
+            log_info "[DRY RUN] Would create .env from template"
+        else
+            cp "$ENV_TEMPLATE_PATH" "$env_file_path"
+            
+            # Parse template and prompt for empty values
+            log_info "Please provide values for environment variables:"
+            while IFS='=' read -r key value || [ -n "$key" ]; do
+                # Skip comments and empty lines
+                [[ "$key" =~ ^#.*$ ]] && continue
+                [[ -z "$key" ]] && continue
+                
+                # Remove any existing value placeholder
+                key=$(echo "$key" | xargs)
+                
+                if [ -z "$value" ] || [ "$value" = '""' ] || [ "$value" = "''" ]; then
+                    echo -ne "  ${CYAN}$key${NC}: "
+                    read -r user_value
+                    if [ -n "$user_value" ]; then
+                        sed -i "s|^${key}=.*|${key}=${user_value}|" "$env_file_path"
+                    fi
+                fi
+            done < "$ENV_TEMPLATE_PATH"
+            
+            chmod 600 "$env_file_path"
+            log_success "Created .env file from template"
+        fi
+        
+    elif [ "$SETUP_ENV_INTERACTIVE" = "true" ]; then
+        # Interactive setup
+        log_info "Interactive .env setup"
+        echo ""
+        echo -e "${BOLD}Enter AWS credentials for S3 access:${NC}"
+        echo -e "${YELLOW}(Press Enter to skip optional values)${NC}"
+        echo ""
+        
+        if [ "$DRY_RUN" = "true" ]; then
+            log_info "[DRY RUN] Would prompt for AWS credentials"
+        else
+            # AWS Access Key ID
+            echo -ne "  ${CYAN}AWS_ACCESS_KEY_ID${NC} (required): "
+            read -r aws_access_key
+            
+            # AWS Secret Access Key (hidden input)
+            echo -ne "  ${CYAN}AWS_SECRET_ACCESS_KEY${NC} (required): "
+            read -rs aws_secret_key
+            echo ""
+            
+            # AWS Region
+            local default_region="${S3_REGION:-ap-south-1}"
+            echo -ne "  ${CYAN}AWS_REGION${NC} [${default_region}]: "
+            read -r aws_region
+            aws_region="${aws_region:-$default_region}"
+            
+            # S3 Bucket (if not already set)
+            if [ -z "$S3_BUCKET" ]; then
+                echo -ne "  ${CYAN}S3_BUCKET${NC} (optional): "
+                read -r s3_bucket_input
+                S3_BUCKET="$s3_bucket_input"
+            fi
+            
+            # S3 Prefix (if not already set)
+            if [ -z "$S3_PREFIX" ]; then
+                echo -ne "  ${CYAN}S3_MODEL_PREFIX${NC} (optional, e.g., models/): "
+                read -r s3_prefix_input
+                S3_PREFIX="$s3_prefix_input"
+            fi
+            
+            # Additional custom variables
+            echo ""
+            echo -e "${BOLD}Additional environment variables:${NC}"
+            echo -e "${YELLOW}(Enter in KEY=VALUE format, empty line to finish)${NC}"
+            
+            declare -a custom_vars
+            while true; do
+                echo -ne "  ${CYAN}VAR${NC}: "
+                read -r custom_var
+                [ -z "$custom_var" ] && break
+                custom_vars+=("$custom_var")
+            done
+            
+            # Validate required fields
+            if [ -z "$aws_access_key" ] || [ -z "$aws_secret_key" ]; then
+                log_error "AWS credentials are required for S3 access"
+                exit 1
+            fi
+            
+            # Create .env file
+            cat > "$env_file_path" << ENVEOF
+# =============================================================================
+# Environment Configuration
+# Generated by dsdep on $(date)
+# =============================================================================
+
+# AWS Credentials
+AWS_ACCESS_KEY_ID=${aws_access_key}
+AWS_SECRET_ACCESS_KEY=${aws_secret_key}
+AWS_REGION=${aws_region}
+
+# S3 Configuration
+S3_BUCKET=${S3_BUCKET}
+S3_MODEL_PREFIX=${S3_PREFIX}
+
+ENVEOF
+            
+            # Add custom variables
+            if [ ${#custom_vars[@]} -gt 0 ]; then
+                echo "" >> "$env_file_path"
+                echo "# Custom Variables" >> "$env_file_path"
+                for var in "${custom_vars[@]}"; do
+                    echo "$var" >> "$env_file_path"
+                done
+            fi
+            
+            chmod 600 "$env_file_path"
+            log_success "Created .env file with AWS credentials"
+        fi
+        
+    elif [ -f "$PROJECT_PATH/.env" ]; then
+        log_info "Using existing .env file in project"
+        
+    elif [ -n "$S3_BUCKET" ]; then
+        # S3 is configured but no env setup - prompt user
+        log_warning "S3 bucket specified but no .env setup configured"
+        echo ""
+        read -p "Would you like to setup AWS credentials now? (y/n): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            SETUP_ENV_INTERACTIVE="true"
+            setup_env_file
+            return
+        else
+            log_warning "Skipping .env setup - S3 download may fail without credentials"
+        fi
+    else
+        log_info "No .env configuration specified, skipping"
+    fi
+}
+
 setup_environment() {
-    log_step "Step 3/7: Setting Up Python Environment"
+    log_step "Step 4/9: Setting Up Python Environment"
     
     if [ "$USE_VENV" = "true" ]; then
         setup_venv
@@ -343,7 +544,7 @@ setup_conda() {
 }
 
 install_dependencies() {
-    log_step "Step 4/7: Installing Dependencies"
+    log_step "Step 5/9: Installing Dependencies"
     
     # Determine which requirements file to use
     local req_file=""
@@ -387,9 +588,13 @@ install_dependencies() {
         pip install --upgrade pip
         pip install -r "$req_file"
         
+        # Install boto3 for S3 downloads
+        log_info "Installing boto3 for S3 support..."
+        pip install boto3 python-dotenv
+        
         # Install ripik_ds_helper
         log_info "Installing ripik_ds_helper..."
-        pip install git+https://github.com/ripiktech/ripik_ds_helper.git
+        pip install git+https://github.com/ripiktech/ripik_ds_helper.git || log_warning "ripik_ds_helper install failed, continuing..."
         
         # Also install ripikutils for monitoring
         if ! pip show ripikutils &> /dev/null; then
@@ -404,9 +609,13 @@ install_dependencies() {
         pip install --upgrade pip
         pip install -r "$req_file"
         
+        # Install boto3 for S3 downloads
+        log_info "Installing boto3 for S3 support..."
+        pip install boto3 python-dotenv
+        
         # Install ripik_ds_helper
         log_info "Installing ripik_ds_helper..."
-        pip install git+https://github.com/ripiktech/ripik_ds_helper.git
+        pip install git+https://github.com/ripiktech/ripik_ds_helper.git || log_warning "ripik_ds_helper install failed, continuing..."
         
         # Also install ripikutils for monitoring
         if ! pip show ripikutils &> /dev/null; then
@@ -418,8 +627,199 @@ install_dependencies() {
     log_success "Dependencies installed successfully!"
 }
 
+download_models_from_s3() {
+    log_step "Step 6/9: Downloading Models from S3"
+    
+    if [ "$SKIP_MODELS" = "true" ]; then
+        log_info "Skipping model download (--skip-models specified)"
+        return
+    fi
+    
+    if [ -z "$S3_BUCKET" ]; then
+        log_info "No S3 bucket specified, skipping model download"
+        return
+    fi
+    
+    log_info "S3 Bucket: $S3_BUCKET"
+    log_info "S3 Prefix: ${S3_PREFIX:-<root>}"
+    log_info "Models Directory: $MODELS_DIR"
+    log_info "Model Extensions: $MODEL_EXTENSIONS"
+    
+    local models_path="$PROJECT_PATH/$MODELS_DIR"
+    
+    if [ "$DRY_RUN" = "true" ]; then
+        log_info "[DRY RUN] Would download models from s3://$S3_BUCKET/$S3_PREFIX to $models_path"
+        return
+    fi
+    
+    # Create models directory
+    mkdir -p "$models_path"
+    
+    # Create Python script to download models
+    local download_script="$PROJECT_PATH/_download_models.py"
+    
+    cat > "$download_script" << 'PYEOF'
+#!/usr/bin/env python3
+"""
+S3 Model Downloader for dsdep
+Downloads model files from S3 bucket to local directory
+"""
+
+import os
+import sys
+import boto3
+from botocore.exceptions import ClientError, NoCredentialsError
+from pathlib import Path
+
+# Load environment variables from .env
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+def download_models(bucket, prefix, local_dir, extensions):
+    """Download model files from S3 to local directory"""
+    
+    # Get AWS credentials from environment
+    aws_access_key = os.getenv('AWS_ACCESS_KEY_ID')
+    aws_secret_key = os.getenv('AWS_SECRET_ACCESS_KEY')
+    aws_region = os.getenv('AWS_REGION', 'ap-south-1')
+    
+    if not aws_access_key or not aws_secret_key:
+        print("ERROR: AWS credentials not found in environment")
+        print("Please ensure .env file contains AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY")
+        return False
+    
+    print(f"Connecting to AWS S3 (region: {aws_region})...")
+    
+    try:
+        # Create S3 client
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=aws_access_key,
+            aws_secret_access_key=aws_secret_key,
+            region_name=aws_region
+        )
+        
+        # List objects in bucket with prefix
+        print(f"Listing objects in s3://{bucket}/{prefix}...")
+        
+        paginator = s3_client.get_paginator('list_objects_v2')
+        pages = paginator.paginate(Bucket=bucket, Prefix=prefix)
+        
+        # Parse extensions
+        ext_list = [e.strip().lower() for e in extensions.split(',')]
+        
+        downloaded_count = 0
+        total_size = 0
+        
+        for page in pages:
+            if 'Contents' not in page:
+                continue
+                
+            for obj in page['Contents']:
+                key = obj['Key']
+                size = obj['Size']
+                
+                # Check if file matches extensions
+                file_ext = Path(key).suffix.lower()
+                if file_ext not in ext_list:
+                    continue
+                
+                # Skip if it's a directory marker
+                if key.endswith('/'):
+                    continue
+                
+                # Determine local file path
+                relative_path = key[len(prefix):] if prefix else key
+                relative_path = relative_path.lstrip('/')
+                local_path = os.path.join(local_dir, relative_path)
+                
+                # Create subdirectories if needed
+                os.makedirs(os.path.dirname(local_path) if os.path.dirname(local_path) else local_dir, exist_ok=True)
+                
+                # Download file
+                print(f"  Downloading: {key} ({size / 1024 / 1024:.2f} MB)")
+                s3_client.download_file(bucket, key, local_path)
+                
+                downloaded_count += 1
+                total_size += size
+        
+        if downloaded_count == 0:
+            print(f"WARNING: No model files found matching extensions: {extensions}")
+            print(f"  Bucket: {bucket}")
+            print(f"  Prefix: {prefix}")
+        else:
+            print(f"\nDownloaded {downloaded_count} files ({total_size / 1024 / 1024:.2f} MB total)")
+        
+        return True
+        
+    except NoCredentialsError:
+        print("ERROR: AWS credentials not found or invalid")
+        return False
+    except ClientError as e:
+        print(f"ERROR: AWS S3 error: {e}")
+        return False
+    except Exception as e:
+        print(f"ERROR: {e}")
+        return False
+
+if __name__ == "__main__":
+    if len(sys.argv) < 5:
+        print("Usage: python _download_models.py <bucket> <prefix> <local_dir> <extensions>")
+        sys.exit(1)
+    
+    bucket = sys.argv[1]
+    prefix = sys.argv[2] if sys.argv[2] != "NONE" else ""
+    local_dir = sys.argv[3]
+    extensions = sys.argv[4]
+    
+    success = download_models(bucket, prefix, local_dir, extensions)
+    sys.exit(0 if success else 1)
+PYEOF
+    
+    # Run the download script
+    log_info "Running model download..."
+    
+    local s3_prefix_arg="${S3_PREFIX:-NONE}"
+    
+    if [ "$USE_VENV" = "true" ]; then
+        source "$CONDA_ENV_PATH/bin/activate"
+        python3 "$download_script" "$S3_BUCKET" "$s3_prefix_arg" "$models_path" "$MODEL_EXTENSIONS"
+    else
+        source "$CONDA_PROFILE"
+        conda activate "$CONDA_ENV_PATH"
+        python3 "$download_script" "$S3_BUCKET" "$s3_prefix_arg" "$models_path" "$MODEL_EXTENSIONS"
+    fi
+    
+    local download_status=$?
+    
+    # Clean up download script
+    rm -f "$download_script"
+    
+    if [ $download_status -eq 0 ]; then
+        log_success "Model download completed!"
+        
+        # List downloaded models
+        log_info "Downloaded models:"
+        find "$models_path" -type f \( -name "*.pt" -o -name "*.pth" -o -name "*.onnx" -o -name "*.weights" -o -name "*.h5" -o -name "*.pkl" \) 2>/dev/null | while read -r file; do
+            local size=$(du -h "$file" | cut -f1)
+            echo "    $(basename "$file") ($size)"
+        done
+    else
+        log_error "Model download failed!"
+        log_warning "You may need to manually download models to: $models_path"
+    fi
+}
+
 run_hardening_script() {
-    log_step "Step 5/7: Running Linux Hardening Script"
+    log_step "Step 7/9: Running Linux Hardening Script"
+    
+    if [ "$SKIP_HARDENING" = "true" ]; then
+        log_info "Skipping hardening (--skip-hardening specified)"
+        return
+    fi
     
     # Set default service name if not provided
     if [ -z "$SERVICE_NAME" ]; then
@@ -558,7 +958,7 @@ PYEOF
 }
 
 verify_deployment() {
-    log_step "Step 6/7: Verifying Deployment"
+    log_step "Step 8/9: Verifying Deployment"
     
     if [ "$DRY_RUN" = "true" ]; then
         log_info "[DRY RUN] Would verify deployment"
@@ -567,7 +967,34 @@ verify_deployment() {
     
     local all_ok=true
     
-    # Check 1: Files created
+    # Check 1: .env file
+    log_info "Checking .env file..."
+    if [ -f "$PROJECT_PATH/.env" ]; then
+        log_success "  .env file exists"
+    else
+        log_warning "  .env file not found"
+    fi
+    
+    # Check 2: Models directory
+    log_info "Checking models directory..."
+    local models_path="$PROJECT_PATH/$MODELS_DIR"
+    if [ -d "$models_path" ]; then
+        local model_count=$(find "$models_path" -type f \( -name "*.pt" -o -name "*.pth" -o -name "*.onnx" -o -name "*.weights" \) 2>/dev/null | wc -l)
+        if [ "$model_count" -gt 0 ]; then
+            log_success "  Found $model_count model files in $MODELS_DIR/"
+        else
+            log_warning "  Models directory exists but no model files found"
+        fi
+    else
+        log_warning "  Models directory not found: $models_path"
+    fi
+    
+    if [ "$SKIP_HARDENING" = "true" ]; then
+        log_info "Skipping service verification (hardening was skipped)"
+        return
+    fi
+    
+    # Check 3: Files created
     log_info "Checking created files..."
     
     local files_to_check=(
@@ -585,7 +1012,7 @@ verify_deployment() {
         fi
     done
     
-    # Check 2: Service is running
+    # Check 4: Service is running
     log_info "Checking service status..."
     sleep 3  # Give service time to start
     
@@ -597,7 +1024,7 @@ verify_deployment() {
         systemctl status "${SERVICE_NAME}.service" --no-pager 2>&1 | head -20 || true
     fi
     
-    # Check 3: Service is enabled
+    # Check 5: Service is enabled
     log_info "Checking service is enabled..."
     
     if systemctl is-enabled --quiet "${SERVICE_NAME}.service"; then
@@ -606,7 +1033,7 @@ verify_deployment() {
         log_warning "  Service is not enabled"
     fi
     
-    # Check 4: Logs directory exists
+    # Check 6: Logs directory exists
     log_info "Checking logs directory..."
     
     local log_dir=$(dirname "$LOG_PATH")
@@ -616,14 +1043,14 @@ verify_deployment() {
         log_warning "  Logs directory not found: $log_dir"
     fi
     
-    # Check 5: Wait and check for log file
+    # Check 7: Wait and check for log file
     log_info "Waiting for log file to be created (10 seconds)..."
     sleep 10
     
     if [ -f "$LOG_PATH" ]; then
         log_success "  Log file exists: $LOG_PATH"
         log_info "  Recent log entries:"
-        tail -5 "$LOG_PATH" 2>/dev/null | while read line; do
+        tail -5 "$LOG_PATH" 2>/dev/null | while read -r line; do
             echo "    $line"
         done
     else
@@ -631,7 +1058,7 @@ verify_deployment() {
         log_info "  (This may be normal if main script hasn't written yet)"
     fi
     
-    # Check 6: Check journalctl for errors
+    # Check 8: Check journalctl for errors
     log_info "Checking service logs for errors..."
     
     local error_count=$(journalctl -u "${SERVICE_NAME}.service" -n 50 --no-pager 2>/dev/null | grep -ci "error\|exception\|failed" || echo "0")
@@ -641,7 +1068,7 @@ verify_deployment() {
     else
         log_warning "  Found $error_count potential issues in logs"
         log_info "  Recent service logs:"
-        journalctl -u "${SERVICE_NAME}.service" -n 10 --no-pager 2>/dev/null | while read line; do
+        journalctl -u "${SERVICE_NAME}.service" -n 10 --no-pager 2>/dev/null | while read -r line; do
             echo "    $line"
         done
     fi
@@ -655,32 +1082,47 @@ verify_deployment() {
 }
 
 print_summary() {
-    log_step "Step 7/7: Deployment Summary"
+    log_step "Step 9/9: Deployment Summary"
     
     echo -e "${BOLD}Deployment completed successfully!${NC}"
     echo ""
     echo -e "${BOLD}Project Details:${NC}"
     echo "  Repository: $REPO_URL"
     echo "  Location: $PROJECT_PATH"
-    echo "  Service: ${SERVICE_NAME}.service"
     echo "  Environment: $CONDA_ENV_PATH"
+    
+    if [ -n "$S3_BUCKET" ]; then
+        echo "  Models Source: s3://$S3_BUCKET/${S3_PREFIX:-}"
+        echo "  Models Directory: $PROJECT_PATH/$MODELS_DIR"
+    fi
+    
+    if [ "$SKIP_HARDENING" != "true" ]; then
+        echo "  Service: ${SERVICE_NAME}.service"
+        echo ""
+        echo -e "${BOLD}Created Files:${NC}"
+        echo "  - $PROJECT_PATH/runner.py"
+        echo "  - $PROJECT_PATH/${SERVICE_NAME}.sh"
+        echo "  - /etc/systemd/system/${SERVICE_NAME}.service"
+        [ -f "$PROJECT_PATH/.env" ] && echo "  - $PROJECT_PATH/.env"
+        echo ""
+        echo -e "${BOLD}Useful Commands:${NC}"
+        echo -e "  ${CYAN}View status:${NC}   sudo systemctl status $SERVICE_NAME"
+        echo -e "  ${CYAN}View logs:${NC}     sudo journalctl -u $SERVICE_NAME -f"
+        echo -e "  ${CYAN}Stop service:${NC}  sudo systemctl stop $SERVICE_NAME"
+        echo -e "  ${CYAN}Start service:${NC} sudo systemctl start $SERVICE_NAME"
+        echo -e "  ${CYAN}Restart:${NC}       sudo systemctl restart $SERVICE_NAME"
+        echo -e "  ${CYAN}Disable:${NC}       sudo systemctl disable $SERVICE_NAME"
+        echo ""
+        echo -e "  ${CYAN}App logs:${NC}      tail -f $LOG_PATH"
+    else
+        echo ""
+        echo -e "${BOLD}Created Files:${NC}"
+        [ -f "$PROJECT_PATH/.env" ] && echo "  - $PROJECT_PATH/.env"
+        [ -d "$PROJECT_PATH/$MODELS_DIR" ] && echo "  - $PROJECT_PATH/$MODELS_DIR/"
+    fi
+    
     echo ""
-    echo -e "${BOLD}Created Files:${NC}"
-    echo "  - $PROJECT_PATH/runner.py"
-    echo "  - $PROJECT_PATH/${SERVICE_NAME}.sh"
-    echo "  - /etc/systemd/system/${SERVICE_NAME}.service"
-    echo ""
-    echo -e "${BOLD}Useful Commands:${NC}"
-    echo -e "  ${CYAN}View status:${NC}   sudo systemctl status $SERVICE_NAME"
-    echo -e "  ${CYAN}View logs:${NC}     sudo journalctl -u $SERVICE_NAME -f"
-    echo -e "  ${CYAN}Stop service:${NC}  sudo systemctl stop $SERVICE_NAME"
-    echo -e "  ${CYAN}Start service:${NC} sudo systemctl start $SERVICE_NAME"
-    echo -e "  ${CYAN}Restart:${NC}       sudo systemctl restart $SERVICE_NAME"
-    echo -e "  ${CYAN}Disable:${NC}       sudo systemctl disable $SERVICE_NAME"
-    echo ""
-    echo -e "  ${CYAN}App logs:${NC}      tail -f $LOG_PATH"
-    echo ""
-    log_success "Deployment complete! Service is running."
+    log_success "Deployment complete!"
 }
 
 # =============================================================================
@@ -688,6 +1130,10 @@ print_summary() {
 # =============================================================================
 
 main() {
+    # Default values
+    MODELS_DIR="$DEFAULT_MODELS_DIR"
+    MODEL_EXTENSIONS=".pt,.pth,.onnx,.weights,.h5,.pkl"
+    
     # Parse command line arguments
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -743,6 +1189,49 @@ main() {
                 USE_VENV="true"
                 shift
                 ;;
+            # S3/Model options
+            --s3-bucket)
+                S3_BUCKET="$2"
+                shift 2
+                ;;
+            --s3-prefix)
+                S3_PREFIX="$2"
+                shift 2
+                ;;
+            --s3-region)
+                S3_REGION="$2"
+                shift 2
+                ;;
+            --models-dir)
+                MODELS_DIR="$2"
+                shift 2
+                ;;
+            --model-ext)
+                MODEL_EXTENSIONS="$2"
+                shift 2
+                ;;
+            # Environment file options
+            --env-file)
+                ENV_FILE_PATH="$2"
+                shift 2
+                ;;
+            --setup-env)
+                SETUP_ENV_INTERACTIVE="true"
+                shift
+                ;;
+            --env-template)
+                ENV_TEMPLATE_PATH="$2"
+                shift 2
+                ;;
+            # Skip options
+            --skip-models)
+                SKIP_MODELS="true"
+                shift
+                ;;
+            --skip-hardening)
+                SKIP_HARDENING="true"
+                shift
+                ;;
             --dry-run)
                 DRY_RUN="true"
                 shift
@@ -785,7 +1274,7 @@ main() {
     fi
     
     # Check if running as root (required for systemd)
-    if [ "$EUID" -ne 0 ] && [ "$DRY_RUN" != "true" ]; then
+    if [ "$EUID" -ne 0 ] && [ "$DRY_RUN" != "true" ] && [ "$SKIP_HARDENING" != "true" ]; then
         log_warning "This script should be run with sudo for systemd operations"
         read -p "Continue anyway? (y/n): " -n 1 -r
         echo
@@ -797,8 +1286,10 @@ main() {
     # Execute deployment steps
     check_dependencies
     clone_repository
+    setup_env_file
     setup_environment
     install_dependencies
+    download_models_from_s3
     run_hardening_script
     verify_deployment
     print_summary
