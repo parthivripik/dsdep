@@ -223,6 +223,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - Part of the [ripik_ds_helper](https://github.com/ripiktech/ripik_ds_helper) project
 - Uses [ripikutils](https://github.com/ripiktech/ripikutils) for monitoring
 
----
-
-Made with ❤️ by [Ripik Technologies](https://ripiktech.com)
