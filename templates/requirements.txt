@@ -1,0 +1,32 @@
+# =============================================================================
+# Default Requirements for Data Science Projects
+# Used by dsdep when no requirements.txt is found in the project
+# =============================================================================
+
+# Core Scientific Computing
+numpy>=1.24.0
+scipy>=1.11.0
+pandas>=2.0.0
+scikit-learn>=1.3.0
+
+# Image Processing
+opencv-python-headless>=4.8.0
+Pillow>=10.0.0
+
+# Deep Learning (CPU by default, modify for GPU)
+# Uncomment the appropriate line for your setup:
+# torch>=2.0.0  # CPU-only
+# torch>=2.0.0+cu118  # CUDA 11.8
+# torch>=2.0.0+cu121  # CUDA 12.1
+
+# Utilities
+PyYAML>=6.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+tqdm>=4.65.0
+
+# Monitoring (required for dsdep hardening)
+ripikutils>=0.1.0
+
+# Logging
+loguru>=0.7.0

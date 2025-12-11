@@ -1,0 +1,2 @@
+bin/dsdep usr/bin
+templates/requirements.txt usr/share/dsdep/templates

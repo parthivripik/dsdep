@@ -1,0 +1,29 @@
+Source: dsdep
+Section: admin
+Priority: optional
+Maintainer: Ripik Technologies <dev@ripiktech.com>
+Build-Depends: debhelper (>= 10)
+Standards-Version: 4.1.2
+Homepage: https://github.com/ripiktech/ripik_ds_helper
+Vcs-Git: https://github.com/ripiktech/ripik_ds_helper.git
+Vcs-Browser: https://github.com/ripiktech/ripik_ds_helper
+
+Package: dsdep
+Architecture: all
+Depends: ${misc:Depends}, bash (>= 4.0), git, curl, python3 (>= 3.8), systemd
+Recommends: python3-pip, python3-venv
+Suggests: anaconda | miniconda3
+Description: Data Science Deployment Tool for Linux
+ dsdep is a command-line tool that automates the deployment of Python/Data
+ Science projects on Linux servers with systemd service hardening.
+ .
+ Features:
+  - Clone Git repositories automatically
+  - Set up Python environments (conda or venv)
+  - Install dependencies from requirements.txt
+  - Create systemd service with auto-restart capability
+  - Monitor application logs and restart on hang
+  - Verify deployment status
+ .
+ This tool is designed for production deployment of ML/AI applications
+ that need to run as persistent services with automatic recovery.

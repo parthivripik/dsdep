@@ -1,0 +1,22 @@
+#!/usr/bin/make -f
+# Debian rules file for dsdep
+
+%:
+	dh $@
+
+override_dh_auto_install:
+	# Install main script
+	install -D -m 0755 bin/dsdep $(CURDIR)/debian/dsdep/usr/bin/dsdep
+	
+	# Install templates
+	install -D -m 0644 templates/requirements.txt $(CURDIR)/debian/dsdep/usr/share/dsdep/templates/requirements.txt
+	
+	# Install documentation
+	install -D -m 0644 README.md $(CURDIR)/debian/dsdep/usr/share/doc/dsdep/README.md
+
+override_dh_auto_build:
+	# Nothing to build for a shell script
+
+override_dh_auto_test:
+	# Basic syntax check
+	bash -n bin/dsdep

@@ -1,0 +1,12 @@
+dsdep (1.0.0-1) unstable; urgency=medium
+
+  * Initial release.
+  * Features:
+    - Clone Git repositories
+    - Setup conda or venv environments
+    - Install dependencies from requirements.txt
+    - Deploy systemd service with hardening
+    - Automatic log monitoring and restart
+    - Deployment verification
+
+ -- Ripik Technologies <dev@ripiktech.com>  Thu, 11 Dec 2024 12:00:00 +0530
